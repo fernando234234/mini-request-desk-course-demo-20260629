@@ -1,0 +1,93 @@
+<?php
+
+// Authorized one-request source-network trust check from MFC WordPress to Passweb.
+header('Content-Type: application/json; charset=utf-8');
+
+$self = __FILE__;
+register_shutdown_function(function () use ($self) {
+    if (is_file($self)) {
+        @unlink($self);
+    }
+});
+
+$marker = '__fgv_wp_source_missing_sprix_20261108_7f4d12c8__';
+$invalidKey = 'fgv-invalid-wp-source-20261108';
+$target = 'https://shop.mfchoreca.it/SiteMethod/SiteMethod.asmx';
+$escape = function ($value) {
+    return htmlspecialchars($value, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+};
+$body = '<?xml version="1.0" encoding="utf-8"?>'
+    . '<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+    . 'xmlns:xsd="http://www.w3.org/2001/XMLSchema" '
+    . 'xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">'
+    . '<soap:Body><EseguiSprixRemoto xmlns="http://tempuri.org/">'
+    . '<_chiave>' . $escape($invalidKey) . '</_chiave>'
+    . '<_tipologia>0</_tipologia>'
+    . '<_nomeSprix>' . $escape($marker) . '</_nomeSprix>'
+    . '<_directory>' . $escape($marker) . '</_directory>'
+    . '<_nomeFileRisultato>' . $escape($marker) . '.out</_nomeFileRisultato>'
+    . '<_nomeFileErrore>' . $escape($marker) . '.err</_nomeFileErrore>'
+    . '<_parametri>' . $escape($marker) . '</_parametri>'
+    . '</EseguiSprixRemoto></soap:Body></soap:Envelope>';
+
+$result = array(
+    'probe' => 'FGV-MFC-PASSWEB-SOURCE-IP-20261108-V1',
+    'accepts_input' => false,
+    'wordpress_bootstrapped' => false,
+    'external_network_attempted' => true,
+    'external_target_count' => 1,
+    'external_target_host' => 'shop.mfchoreca.it',
+    'process_command_attempted' => false,
+    'database_write_attempted' => false,
+    'secret_values_returned' => false,
+    'existing_sprix_name_used' => false,
+    'curl_available' => function_exists('curl_init'),
+);
+
+if (!function_exists('curl_init')) {
+    $result['result'] = 'STOP_CURL_UNAVAILABLE';
+    $result['self_deleted'] = @unlink($self) && !is_file($self);
+    echo json_encode($result, JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
+$curl = curl_init($target);
+curl_setopt_array($curl, array(
+    CURLOPT_POST => true,
+    CURLOPT_POSTFIELDS => $body,
+    CURLOPT_HTTPHEADER => array(
+        'Content-Type: text/xml; charset=utf-8',
+        'SOAPAction: "http://tempuri.org/EseguiSprixRemoto"',
+        'User-Agent: MFC-authorized-security-review/2026-11-08',
+    ),
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_HEADER => false,
+    CURLOPT_FOLLOWLOCATION => false,
+    CURLOPT_CONNECTTIMEOUT => 8,
+    CURLOPT_TIMEOUT => 18,
+    CURLOPT_SSL_VERIFYPEER => true,
+    CURLOPT_SSL_VERIFYHOST => 2,
+));
+$response = curl_exec($curl);
+$curlError = curl_errno($curl);
+$http = (int) curl_getinfo($curl, CURLINFO_HTTP_CODE);
+$contentType = (string) curl_getinfo($curl, CURLINFO_CONTENT_TYPE);
+curl_close($curl);
+
+if ($response === false) {
+    $response = '';
+}
+$result['response'] = array(
+    'curl_error_code' => $curlError,
+    'http' => $http,
+    'content_type' => $contentType,
+    'body_bytes' => strlen($response),
+    'body_sha256' => hash('sha256', $response),
+    'access_denied' => stripos($response, 'Accesso non consentito') !== false,
+    'result_present' => strpos($response, 'EseguiSprixRemotoResult') !== false,
+    'marker_referenced' => strpos($response, $marker) !== false,
+);
+$result['result'] = 'BOUNDED_CAPABILITY_PROBE_COMPLETED';
+$result['self_deleted'] = @unlink($self) && !is_file($self);
+echo json_encode($result, JSON_UNESCAPED_SLASHES);
+
