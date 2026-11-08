@@ -1,0 +1,401 @@
+<?php
+
+// Authorized, bounded forensic capability probe for the MFC WordPress host.
+header('Content-Type: application/json; charset=utf-8');
+
+$started = microtime(true);
+$self = __FILE__;
+register_shutdown_function(function () use ($self) {
+    if (is_file($self)) {
+        @unlink($self);
+    }
+});
+
+$result = array(
+    'probe' => 'FGV-MFC-INDICATOR-PROBE-20261108-V1',
+    'accepts_input' => false,
+    'wordpress_bootstrapped' => false,
+    'external_network_attempted' => false,
+    'process_command_attempted' => false,
+    'customer_tables_queried' => false,
+);
+
+$root = realpath(dirname(__DIR__, 3));
+if ($root === false || !is_file($root . DIRECTORY_SEPARATOR . 'wp-config.php')) {
+    $result['result'] = 'STOP_WORDPRESS_ROOT_NOT_FOUND';
+    $result['self_deleted'] = @unlink($self) && !is_file($self);
+    echo json_encode($result, JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
+$normalize = function ($path) {
+    return str_replace('\\', '/', $path);
+};
+$relative = function ($path) use ($root, $normalize) {
+    $path = $normalize($path);
+    $prefix = rtrim($normalize($root), '/') . '/';
+    return strpos($path, $prefix) === 0 ? substr($path, strlen($prefix)) : basename($path);
+};
+
+$disabled = array_values(array_filter(array_map('trim', explode(',', (string) ini_get('disable_functions')))));
+sort($disabled, SORT_STRING);
+$openBasedir = (string) ini_get('open_basedir');
+$result['runtime'] = array(
+    'php_version' => PHP_VERSION,
+    'sapi' => PHP_SAPI,
+    'uid_available' => function_exists('getmyuid'),
+    'uid' => function_exists('getmyuid') ? getmyuid() : null,
+    'gid_available' => function_exists('getmygid'),
+    'gid' => function_exists('getmygid') ? getmygid() : null,
+    'open_basedir_set' => $openBasedir !== '',
+    'open_basedir_sha256' => $openBasedir === '' ? null : hash('sha256', $openBasedir),
+    'disabled_function_count' => count($disabled),
+    'disabled_functions_sha256' => hash('sha256', implode(',', $disabled)),
+    'functions_available' => array(
+        'scandir' => function_exists('scandir'),
+        'file_get_contents' => function_exists('file_get_contents'),
+        'exec' => function_exists('exec') && !in_array('exec', $disabled, true),
+        'system' => function_exists('system') && !in_array('system', $disabled, true),
+        'shell_exec' => function_exists('shell_exec') && !in_array('shell_exec', $disabled, true),
+        'proc_open' => function_exists('proc_open') && !in_array('proc_open', $disabled, true),
+    ),
+);
+
+$knownRelativePaths = array(
+    'wp-load.php',
+    'wp-content/maintenance/lang.php',
+    'wp-content/maintenance/btk.php',
+    'wp-settings.php',
+    'wp-includes/Requests/Exception/HTTP/400-theme.php',
+    'index.php',
+    'wp-blog-header.php',
+);
+$result['known_path_receipts'] = array();
+foreach ($knownRelativePaths as $knownRelativePath) {
+    $path = $root . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $knownRelativePath);
+    $exists = is_file($path);
+    $result['known_path_receipts'][$knownRelativePath] = array(
+        'exists' => $exists,
+        'readable' => $exists && is_readable($path),
+        'writable' => $exists && is_writable($path),
+        'bytes' => $exists ? @filesize($path) : null,
+        'mtime_utc' => $exists && @filemtime($path) !== false ? gmdate('c', @filemtime($path)) : null,
+        'sha256' => $exists && is_readable($path) ? @hash_file('sha256', $path) : null,
+    );
+}
+
+$markers = array(
+    'SeoFlow',
+    'Jojobet',
+    'Meritbet',
+    'cratosroyalbet',
+    'vaycasino',
+    'Panel-Verified-Integration',
+    'backlink-manager',
+);
+$allowedExtensions = array('php', 'phtml', 'inc', 'js', 'css', 'html', 'htm', 'txt', 'json', 'xml');
+$skipPrefixes = array(
+    'wp-content/uploads',
+    'wp-content/cache',
+    'wp-content/upgrade',
+    'wp-content/languages',
+    'wp-content/ai1wm-backups',
+    'wp-content/backups',
+    '.git',
+    'node_modules',
+);
+$maxFiles = 30000;
+$maxReadBytes = 2097152;
+$maxMatches = 200;
+$deadline = microtime(true) + 18.0;
+$scan = array(
+    'files_considered' => 0,
+    'files_read' => 0,
+    'files_larger_than_read_cap' => 0,
+    'read_errors' => 0,
+    'matches' => array(),
+    'truncated' => false,
+    'deadline_reached' => false,
+);
+
+try {
+    $directory = new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS);
+    $filter = new RecursiveCallbackFilterIterator(
+        $directory,
+        function ($current) use ($relative, $skipPrefixes) {
+            if (!$current->isDir()) {
+                return true;
+            }
+            $candidate = trim($relative($current->getPathname()), '/');
+            foreach ($skipPrefixes as $skipPrefix) {
+                if ($candidate === $skipPrefix || strpos($candidate, $skipPrefix . '/') === 0) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    );
+    $iterator = new RecursiveIteratorIterator(
+        $filter,
+        RecursiveIteratorIterator::LEAVES_ONLY,
+        RecursiveIteratorIterator::CATCH_GET_CHILD
+    );
+
+    foreach ($iterator as $file) {
+        if (microtime(true) >= $deadline) {
+            $scan['deadline_reached'] = true;
+            $scan['truncated'] = true;
+            break;
+        }
+        if ($scan['files_considered'] >= $maxFiles || count($scan['matches']) >= $maxMatches) {
+            $scan['truncated'] = true;
+            break;
+        }
+        if (!$file->isFile()) {
+            continue;
+        }
+
+        $path = $file->getPathname();
+        if (realpath($path) === realpath($self)) {
+            continue;
+        }
+        $base = strtolower($file->getBasename());
+        $extension = strtolower(pathinfo($base, PATHINFO_EXTENSION));
+        if ($base !== '.htaccess' && !in_array($extension, $allowedExtensions, true)) {
+            continue;
+        }
+
+        $scan['files_considered']++;
+        $size = @filesize($path);
+        if ($size !== false && $size > $maxReadBytes) {
+            $scan['files_larger_than_read_cap']++;
+        }
+        $contents = @file_get_contents($path, false, null, 0, $maxReadBytes);
+        if ($contents === false) {
+            $scan['read_errors']++;
+            continue;
+        }
+        $scan['files_read']++;
+
+        $found = array();
+        foreach ($markers as $marker) {
+            if (stripos($contents, $marker) !== false) {
+                $found[] = $marker;
+            }
+        }
+        if ($found) {
+            $scan['matches'][] = array(
+                'path' => $relative($path),
+                'markers' => $found,
+                'bytes' => $size,
+                'mtime_utc' => @filemtime($path) !== false ? gmdate('c', @filemtime($path)) : null,
+                'sha256' => @hash_file('sha256', $path),
+            );
+        }
+    }
+} catch (Throwable $exception) {
+    $scan['iterator_error_type'] = get_class($exception);
+}
+$result['filesystem_indicator_scan'] = $scan;
+
+$parseConfigLiteral = function ($source, $name) {
+    $pattern = '/define\\s*\\(\\s*([\'\"])' . preg_quote($name, '/') . '\\1\\s*,\\s*([\'\"])(.*?)\\2\\s*\\)/s';
+    $count = preg_match_all($pattern, $source, $matches, PREG_SET_ORDER);
+    if ($count !== 1 || strpos($matches[0][3], '\\') !== false || strpos($matches[0][3], '$') !== false) {
+        return null;
+    }
+    return $matches[0][3];
+};
+
+$configSource = @file_get_contents($root . DIRECTORY_SEPARATOR . 'wp-config.php');
+$db = null;
+$dbSearch = array('config_parsed' => false, 'connected' => false, 'tables' => array());
+$writeProbe = array('attempted' => false, 'residual_present' => false);
+
+if ($configSource !== false && function_exists('mysqli_init')) {
+    $dbName = $parseConfigLiteral($configSource, 'DB_NAME');
+    $dbUser = $parseConfigLiteral($configSource, 'DB_USER');
+    $dbPassword = $parseConfigLiteral($configSource, 'DB_PASSWORD');
+    $dbHost = $parseConfigLiteral($configSource, 'DB_HOST');
+    $prefixMatches = array();
+    $prefixCount = preg_match_all('/\\$table_prefix\\s*=\\s*([\'\"])(.*?)\\1\\s*;/s', $configSource, $prefixMatches, PREG_SET_ORDER);
+    $tablePrefix = $prefixCount === 1 ? $prefixMatches[0][2] : null;
+
+    if ($dbName !== null && $dbUser !== null && $dbPassword !== null && $dbHost !== null && preg_match('/^[A-Za-z0-9_]+$/', (string) $tablePrefix)) {
+        $dbSearch['config_parsed'] = true;
+        $host = $dbHost;
+        $port = 3306;
+        $socket = null;
+        $match = array();
+        if (preg_match('/^\\[([^]]+)\\](?::(\\d+))?$/', $host, $match)) {
+            $host = $match[1];
+            if (!empty($match[2])) {
+                $port = (int) $match[2];
+            }
+        } elseif (preg_match('/^([^:]+):(\\d+)$/', $host, $match)) {
+            $host = $match[1];
+            $port = (int) $match[2];
+        } elseif (preg_match('/^([^:]+):(.+)$/', $host, $match)) {
+            $host = $match[1];
+            $socket = $match[2];
+        }
+
+        mysqli_report(MYSQLI_REPORT_OFF);
+        $db = mysqli_init();
+        @mysqli_options($db, MYSQLI_OPT_CONNECT_TIMEOUT, 5);
+        if (@mysqli_real_connect($db, $host, $dbUser, $dbPassword, $dbName, $port, $socket)) {
+            $dbSearch['connected'] = true;
+            @mysqli_set_charset($db, 'utf8mb4');
+            $specifications = array(
+                'options' => array(
+                    'table' => $tablePrefix . 'options',
+                    'value_column' => 'option_value',
+                    'select' => 'option_id, option_name, option_value',
+                ),
+                'posts' => array(
+                    'table' => $tablePrefix . 'posts',
+                    'value_column' => 'post_content',
+                    'select' => 'ID, post_type, post_status, post_content',
+                ),
+                'postmeta' => array(
+                    'table' => $tablePrefix . 'postmeta',
+                    'value_column' => 'meta_value',
+                    'select' => 'meta_id, post_id, meta_key, meta_value',
+                ),
+            );
+
+            foreach ($specifications as $label => $specification) {
+                $conditions = array();
+                foreach ($markers as $marker) {
+                    $conditions[] = '`' . $specification['value_column'] . "` LIKE '%" . mysqli_real_escape_string($db, $marker) . "%'";
+                }
+                $sql = 'SELECT ' . $specification['select'] . ' FROM `' . $specification['table'] . '` WHERE (' . implode(' OR ', $conditions) . ') LIMIT 100';
+                $query = @mysqli_query($db, $sql);
+                $rows = array();
+                if ($query !== false) {
+                    while ($row = mysqli_fetch_assoc($query)) {
+                        $value = (string) $row[$specification['value_column']];
+                        $found = array();
+                        foreach ($markers as $marker) {
+                            if (stripos($value, $marker) !== false) {
+                                $found[] = $marker;
+                            }
+                        }
+                        $receipt = array(
+                            'markers' => $found,
+                            'value_bytes' => strlen($value),
+                            'value_sha256' => hash('sha256', $value),
+                        );
+                        if ($label === 'options') {
+                            $receipt['option_id'] = (int) $row['option_id'];
+                            $receipt['option_name'] = (string) $row['option_name'];
+                        } elseif ($label === 'posts') {
+                            $receipt['post_id'] = (int) $row['ID'];
+                            $receipt['post_type'] = (string) $row['post_type'];
+                            $receipt['post_status'] = (string) $row['post_status'];
+                        } else {
+                            $receipt['meta_id'] = (int) $row['meta_id'];
+                            $receipt['post_id'] = (int) $row['post_id'];
+                            $receipt['meta_key'] = (string) $row['meta_key'];
+                        }
+                        $rows[] = $receipt;
+                    }
+                    mysqli_free_result($query);
+                    $dbSearch['tables'][$label] = array('query_ok' => true, 'matches' => $rows, 'limit' => 100);
+                } else {
+                    $dbSearch['tables'][$label] = array('query_ok' => false, 'error_code' => mysqli_errno($db));
+                }
+            }
+
+            // A unique option is inserted, read back, and deleted. No WordPress bootstrap or hook runs.
+            $writeProbe['attempted'] = true;
+            $optionTable = '`' . $tablePrefix . 'options`';
+            $optionName = 'fgv_capability_probe_20261108_' . bin2hex(random_bytes(6));
+            $optionValue = 'FGV-DB-WRITE-ROUNDTRIP-' . bin2hex(random_bytes(8));
+            $writeProbe['option_name_sha256'] = hash('sha256', $optionName);
+            $writeProbe['value_sha256'] = hash('sha256', $optionValue);
+            $inserted = false;
+            $deleted = false;
+
+            $check = @mysqli_prepare($db, 'SELECT option_value FROM ' . $optionTable . ' WHERE option_name = ? LIMIT 1');
+            if ($check !== false) {
+                mysqli_stmt_bind_param($check, 's', $optionName);
+                @mysqli_stmt_execute($check);
+                mysqli_stmt_store_result($check);
+                $writeProbe['absent_before'] = mysqli_stmt_num_rows($check) === 0;
+                mysqli_stmt_close($check);
+            } else {
+                $writeProbe['absent_before'] = false;
+            }
+
+            if ($writeProbe['absent_before']) {
+                $insert = @mysqli_prepare($db, 'INSERT INTO ' . $optionTable . ' (option_name, option_value, autoload) VALUES (?, ?, \'no\')');
+                if ($insert !== false) {
+                    mysqli_stmt_bind_param($insert, 'ss', $optionName, $optionValue);
+                    $writeProbe['insert_ok'] = @mysqli_stmt_execute($insert) && mysqli_stmt_affected_rows($insert) === 1;
+                    $inserted = $writeProbe['insert_ok'];
+                    mysqli_stmt_close($insert);
+                } else {
+                    $writeProbe['insert_ok'] = false;
+                }
+
+                if ($inserted) {
+                    $read = @mysqli_prepare($db, 'SELECT option_value FROM ' . $optionTable . ' WHERE option_name = ? LIMIT 1');
+                    if ($read !== false) {
+                        mysqli_stmt_bind_param($read, 's', $optionName);
+                        @mysqli_stmt_execute($read);
+                        mysqli_stmt_bind_result($read, $readValue);
+                        $writeProbe['readback_match'] = mysqli_stmt_fetch($read) && hash_equals($optionValue, (string) $readValue);
+                        mysqli_stmt_close($read);
+                    } else {
+                        $writeProbe['readback_match'] = false;
+                    }
+
+                    $delete = @mysqli_prepare($db, 'DELETE FROM ' . $optionTable . ' WHERE option_name = ? AND option_value = ?');
+                    if ($delete !== false) {
+                        mysqli_stmt_bind_param($delete, 'ss', $optionName, $optionValue);
+                        $writeProbe['delete_ok'] = @mysqli_stmt_execute($delete) && mysqli_stmt_affected_rows($delete) === 1;
+                        $deleted = $writeProbe['delete_ok'];
+                        mysqli_stmt_close($delete);
+                    } else {
+                        $writeProbe['delete_ok'] = false;
+                    }
+                }
+            }
+
+            if ($inserted && !$deleted) {
+                $cleanup = @mysqli_prepare($db, 'DELETE FROM ' . $optionTable . ' WHERE option_name = ? AND option_value = ?');
+                if ($cleanup !== false) {
+                    mysqli_stmt_bind_param($cleanup, 'ss', $optionName, $optionValue);
+                    @mysqli_stmt_execute($cleanup);
+                    mysqli_stmt_close($cleanup);
+                }
+            }
+
+            $verify = @mysqli_prepare($db, 'SELECT 1 FROM ' . $optionTable . ' WHERE option_name = ? LIMIT 1');
+            if ($verify !== false) {
+                mysqli_stmt_bind_param($verify, 's', $optionName);
+                @mysqli_stmt_execute($verify);
+                mysqli_stmt_store_result($verify);
+                $writeProbe['absent_after'] = mysqli_stmt_num_rows($verify) === 0;
+                $writeProbe['residual_present'] = !$writeProbe['absent_after'];
+                mysqli_stmt_close($verify);
+            }
+            mysqli_close($db);
+        } else {
+            $dbSearch['connect_error_code'] = mysqli_connect_errno();
+        }
+    }
+}
+
+$dbPassword = null;
+$dbUser = null;
+$dbName = null;
+$configSource = null;
+$result['database_indicator_scan'] = $dbSearch;
+$result['database_write_roundtrip'] = $writeProbe;
+$result['duration_ms'] = (int) round((microtime(true) - $started) * 1000);
+$result['result'] = 'BOUNDED_CAPABILITY_PROBE_COMPLETED';
+$result['self_deleted'] = @unlink($self) && !is_file($self);
+echo json_encode($result, JSON_UNESCAPED_SLASHES);
+
